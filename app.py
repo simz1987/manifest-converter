@@ -5,13 +5,13 @@ import re
 
 st.set_page_config(page_title="APC Manifest Batcher", layout="wide")
 
-st.title("🚛 APC Manifest Batch Converter")
-st.write("Upload multiple APC PDFs to combine into one master table with Date and Postcode.")
+st.title("🚛 APC Weekly Manifest Batcher")
+st.write("Upload multiple PDFs to generate a combined weekly summary.")
 
 uploaded_files = st.file_uploader("Upload APC Manifest PDFs", type="pdf", accept_multiple_files=True)
 
 if uploaded_files:
-    all_data = []
+    master_list = []
     
     for uploaded_file in uploaded_files:
         try:
@@ -20,56 +20,71 @@ if uploaded_files:
             for page in reader.pages:
                 full_text += page.extract_text() + "\n"
             
-            lines = [line.strip() for line in full_text.split('\n') if line.strip()]
+            lines = [l.strip() for l in full_text.split('\n') if l.strip()]
             
-            # 1. Grab the Collection Date (usually near the top)
-            collection_date = "Unknown"
+            # --- 1. GET THE COLLECTION DATE (DD/MM) ---
+            file_date = ""
             for i, line in enumerate(lines):
-                if "Collection Date:" in line:
-                    if i + 1 < len(lines):
-                        collection_date = lines[i+1]
+                if "Collection Date:" in line and i+1 < len(lines):
+                    date_match = re.search(r'(\d{2})/(\d{2})', lines[i+1])
+                    if date_match:
+                        file_date = f"{date_match.group(1)}/{date_match.group(2)}"
                     break
-            
-            # 2. Scan for Consignments and Postcodes
+
+            # --- 2. EXTRACT EACH DELIVERY BLOCK ---
             for i, line in enumerate(lines):
-                # Look for the 7-digit consignment number starting with 000
-                if len(line) == 7 and line.startswith("000") and line.isdigit():
+                # Trigger on 7-digit consignment number
+                if re.fullmatch(r'\d{7}', line):
                     cons_num = line
-                    customer = lines[i+1] if i+1 < len(lines) else "Unknown"
+                    dest = lines[i+1] if i+1 < len(lines) else ""
                     
-                    # Look ahead for the Postcode (Pattern: Letters + Numbers + Space + Number + Letters)
-                    postcode = ""
-                    # We check the next 8 lines for a postcode pattern
-                    for j in range(i+1, i+10):
-                        if j < len(lines):
-                            # Regex to find UK Postcode format
-                            found = re.search(r'[A-Z]{1,2}[0-9R][0-9A-Z]? [0-9][A-Z]{2}', lines[j].upper())
-                            if found:
-                                postcode = found.group()
-                                break
+                    service, weight, qty, postcode = "", "", "", ""
                     
-                    all_data.append({
-                        "Collection Date": collection_date,
-                        "Consignment": cons_num,
-                        "Customer": customer,
+                    # Look ahead 15 lines to fill in the details for this consignment
+                    for j in range(i+1, i+15):
+                        if j >= len(lines): break
+                        l = lines[j]
+                        
+                        # Service Code (SL: XXXX)
+                        if "SL:" in l:
+                            s_match = re.search(r'SL:\s*(\d+)', l)
+                            if s_match: service = s_match.group(1)
+                        
+                        # Weight (Weight: XX.XX)
+                        if "Weight:" in l:
+                            w_match = re.search(r'Weight:\s*([\d\.]+)', l)
+                            if w_match: weight = w_match.group(1)
+                        
+                        # Postcode
+                        pc_match = re.search(r'[A-Z]{1,2}[0-9][A-Z0-9]? [0-9][A-Z]{2}', l.upper())
+                        if pc_match: postcode = pc_match.group()
+                        
+                        # Parcel Qty (The standalone number near the bottom of the block)
+                        if l in ["1", "2", "3", "4", "5"] and "Phone:" in lines[j-1]:
+                            qty = l
+
+                    master_list.append({
+                        "Collection Date": file_date,
+                        "Consignment Number": cons_num,
+                        "Service": service,
+                        "Delivery Destination": dest,
+                        "Parcels": qty,
+                        "Weight": weight,
                         "Postcode": postcode
                     })
                     
         except Exception as e:
             st.error(f"Error reading {uploaded_file.name}: {e}")
 
-    if all_data:
-        df = pd.DataFrame(all_data)
-        
-        # Remove duplicates based on consignment number
-        df = df.drop_duplicates(subset=["Consignment"])
-        
-        # Sort by Date so the week is in order
-        df = df.sort_values(by="Collection Date")
+    if master_list:
+        df = pd.DataFrame(master_list)
+        df = df.drop_duplicates(subset=["Consignment Number"])
 
-        st.success(f"✅ Processed {len(uploaded_files)} manifests.")
-        st.dataframe(df, use_container_width=True)
+        st.success(f"✅ Extracted {len(df)} deliveries from your files.")
+        
+        # Display the table
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
-        # Download CSV
+        # Download
         csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Download Master Weekly CSV", csv, "Weekly_APC_Summary.csv", "text/csv")
+        st.download_button("📥 Download Weekly Summary CSV", csv, "Weekly_APC_Summary.csv", "text/csv")
