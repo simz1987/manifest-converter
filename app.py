@@ -2,75 +2,66 @@ import streamlit as st
 import pandas as pd
 from pypdf import PdfReader
 import io
-import re
 
-st.set_page_config(page_title="Weekly Manifest Batcher", layout="wide")
+st.set_page_config(page_title="Manifest Converter", layout="wide")
 
-# (Optional: Insert your check_password() logic here)
+st.title("🚛 Manifest Batch Converter")
+st.write("Upload multiple PDFs to combine them into one Excel-ready table.")
 
-st.title("🚛 Weekly Manifest Batcher")
-st.write("Upload all your PDFs for the week. The app will extract every delivery into one master table.")
-
+# Allow multiple files
 uploaded_files = st.file_uploader("Upload Manifest PDFs", type="pdf", accept_multiple_files=True)
 
 if uploaded_files:
-    master_data = []
+    all_data = []
     
-    with st.spinner(f"Extracting data from {len(uploaded_files)} files..."):
-        for uploaded_file in uploaded_files:
-            try:
-                reader = PdfReader(uploaded_file)
+    for uploaded_file in uploaded_files:
+        try:
+            reader = PdfReader(uploaded_file)
+            
+            # Logic to grab the data exactly like your original version
+            for page in reader.pages:
+                text = page.extract_text()
+                lines = text.split('\n')
                 
-                # We process page by page
-                for page_num, page in enumerate(reader.pages):
-                    text = page.extract_text()
-                    lines = text.split('\n')
+                # Using the original 'Label' scanning logic
+                # This assumes your PDF has "Delivered To:" and "Town:" etc.
+                current_cust = ""
+                current_town = ""
+                current_date = ""
+                
+                for line in lines:
+                    if "Delivered To:" in line:
+                        current_cust = line.split("Delivered To:")[-1].strip()
+                    if "Town:" in line:
+                        current_town = line.split("Town:")[-1].strip()
+                    if "Date:" in line:
+                        current_date = line.split("Date:")[-1].strip()
                     
-                    # --- THE UNIVERSAL SCANNER ---
-                    # We look for the patterns that usually identify a delivery
-                    current_cust = "Unknown"
-                    current_town = "Unknown"
-                    
-                    for line in lines:
-                        # Example: Look for 'Customer:' or 'Name:' labels
-                        if "Customer:" in line or "Name:" in line:
-                            current_cust = line.split(':')[-1].strip()
-                        
-                        if "Town:" in line or "City:" in line:
-                            current_town = line.split(':')[-1].strip()
-                        
-                        # Once we have a 'set', we add it to our list
-                        # Note: You might need to adjust these keywords 
-                        # based on exactly what words are on your Manifest PDF
-                        if "Delivery Note:" in line:
-                            master_data.append({
-                                "Date/File": uploaded_file.name.replace('.pdf', ''),
-                                "Customer": current_cust,
-                                "Town": current_town,
-                                "Ref": line.split(':')[-1].strip()
-                            })
-            except Exception as e:
-                st.error(f"Error reading {uploaded_file.name}: {e}")
+                    # When a row marker is found (like a Delivery Note or a Carrier ID)
+                    # it adds the row to our master list
+                    if "CARR_ID" in line or "T_ID" in line:
+                        # Split the line based on how your original report was formatted
+                        parts = line.split() 
+                        all_data.append({
+                            "Date": current_date,
+                            "Customer": current_cust,
+                            "Town": current_town,
+                            "CARR_ID": parts[0] if len(parts) > 0 else "",
+                            "T_ID": parts[1] if len(parts) > 1 else "",
+                            "S_ID": parts[2] if len(parts) > 2 else ""
+                        })
+        except Exception as e:
+            st.error(f"Error processing {uploaded_file.name}: {e}")
 
-    if master_data:
-        df = pd.DataFrame(master_data)
+    if all_data:
+        df = pd.DataFrame(all_data)
         
-        # Clean up the data
+        # Clean up duplicates
         df = df.drop_duplicates()
 
-        st.success(f"✅ Extracted {len(df)} deliveries from {len(uploaded_files)} files.")
-        
-        # Display the table
-        st.subheader("📅 Weekly Master Schedule")
+        st.success(f"✅ Combined {len(uploaded_files)} files into one list.")
         st.dataframe(df, use_container_width=True)
 
-        # Download button
+        # Excel/CSV Download
         csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Download Weekly Master CSV",
-            data=csv,
-            file_name="Weekly_Manifest_Master.csv",
-            mime="text/csv",
-        )
-    else:
-        st.warning("Could not find any delivery data in those PDFs. Check that the PDFs are not 'scanned images'.")
+        st.download_button("📥 Download Master CSV", csv, "Combined_Manifests.csv", "text/csv")
