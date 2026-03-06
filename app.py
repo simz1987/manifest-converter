@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from pypdf import PdfReader
 import re
+from datetime import datetime
 
 st.set_page_config(page_title="APC Manifest Batcher", layout="wide")
 
@@ -13,6 +14,12 @@ uploaded_files = st.file_uploader("Upload APC Manifest PDFs", type="pdf", accept
 if uploaded_files:
     master_list = []
     
+    # Month mapping for the "05-Mar" format
+    months = {
+        "01": "Jan", "02": "Feb", "03": "Mar", "04": "Apr", "05": "May", "06": "Jun",
+        "07": "Jul", "08": "Aug", "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dec"
+    }
+    
     for uploaded_file in uploaded_files:
         try:
             reader = PdfReader(uploaded_file)
@@ -22,35 +29,37 @@ if uploaded_files:
             
             lines = [l.strip() for l in full_text.split('\n') if l.strip()]
             
-            # --- 1. GET THE COLLECTION DATE (DD/MM) ---
+            # --- 1. GET THE COLLECTION DATE (05-Mar Format) ---
             file_date = ""
             for i, line in enumerate(lines):
                 if "Collection Date:" in line and i+1 < len(lines):
                     date_match = re.search(r'(\d{2})/(\d{2})', lines[i+1])
                     if date_match:
-                        file_date = f"{date_match.group(1)}/{date_match.group(2)}"
+                        day = date_match.group(1)
+                        month_num = date_match.group(2)
+                        file_date = f"{day}-{months.get(month_num, month_num)}"
                     break
 
             # --- 2. EXTRACT EACH DELIVERY BLOCK ---
             for i, line in enumerate(lines):
-                # Trigger on 7-digit consignment number
-                if re.fullmatch(r'\d{7}', line):
-                    cons_num = line
+                # Trigger on 7-digit consignment number starting with 000
+                if re.fullmatch(r'000\d{4}', line):
+                    # Strip leading zeros for the display (0004827 -> 4827)
+                    cons_num = str(int(line))
                     dest = lines[i+1] if i+1 < len(lines) else ""
                     
                     service, weight, qty, postcode = "", "", "", ""
                     
-                    # Look ahead 15 lines to fill in the details for this consignment
                     for j in range(i+1, i+15):
                         if j >= len(lines): break
                         l = lines[j]
                         
-                        # Service Code (SL: XXXX)
+                        # Service Code (SL: XXXX) + " parcel"
                         if "SL:" in l:
                             s_match = re.search(r'SL:\s*(\d+)', l)
-                            if s_match: service = s_match.group(1)
+                            if s_match: service = f"{s_match.group(1)} parcel"
                         
-                        # Weight (Weight: XX.XX)
+                        # Weight
                         if "Weight:" in l:
                             w_match = re.search(r'Weight:\s*([\d\.]+)', l)
                             if w_match: weight = w_match.group(1)
@@ -59,8 +68,8 @@ if uploaded_files:
                         pc_match = re.search(r'[A-Z]{1,2}[0-9][A-Z0-9]? [0-9][A-Z]{2}', l.upper())
                         if pc_match: postcode = pc_match.group()
                         
-                        # Parcel Qty (The standalone number near the bottom of the block)
-                        if l in ["1", "2", "3", "4", "5"] and "Phone:" in lines[j-1]:
+                        # Parcel Qty
+                        if l in ["1", "2", "3", "4", "5"] and ("Phone:" in lines[j-1] or "QTY" in lines[j-5]):
                             qty = l
 
                     master_list.append({
@@ -80,7 +89,7 @@ if uploaded_files:
         df = pd.DataFrame(master_list)
         df = df.drop_duplicates(subset=["Consignment Number"])
 
-        st.success(f"✅ Extracted {len(df)} deliveries from your files.")
+        st.success(f"✅ Extracted {len(df)} deliveries.")
         
         # Display the table
         st.dataframe(df, use_container_width=True, hide_index=True)
